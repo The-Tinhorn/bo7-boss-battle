@@ -1,0 +1,6 @@
+# Built or personal files that are not part of the mods
+*.zip
+*.gscc
+rex_underbarrel_fix/
+Clean Kronos.bat
+clean_kronos.ps1

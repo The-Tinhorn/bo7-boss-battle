@@ -1,0 +1,7 @@
+{
+    "name": "Fast Restart",
+    "author": "Tinhorn",
+    "version": "1",
+    "type": "script",
+    "description": "Old-CoD style Fast Restart. Crouch (or go prone), then pause: Save & Quit becomes Fast Restart and restarts the match straight away, no menus or reload. Pause while standing for the normal Save & Quit. Host only."
+}
