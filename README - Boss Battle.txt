@@ -4,13 +4,8 @@ SUBSCRIBE TO TINHORN :)  youtube.com/@TheTinhorn
 
 
 NEW IN 0.5
-- FAST RESTART is now its own optional mod (the "fast_restart" folder in this zip) and works in
-  any Zombies match, not just Boss Battle. Save & Quit is back too:
-     CROUCH (or go prone), then pause  = the button reads "Fast Restart" and restarts the match
-                                         straight away, no menus or reload (host only). In Boss
-                                         Battle that's straight back to the gear-up area.
-     Pause while STANDING              = the normal Save & Quit.
-  The button label always shows which one you'll get.
+- Fast Restart is no longer part of Boss Battle, so Save & Quit is back to normal. Fast Restart is
+  now a separate mod of its own: github.com/The-Tinhorn/bo7-fast-restart
 - Rex Infernus: zombies now spawn in the boss fight. They were spawning under the arena floor.
 - The gear-up armor chalks sit a bit higher off the floor.
 
@@ -55,20 +50,16 @@ INSTALL
       <game folder>\kronos\mods\boss_battle\mod.json
 3. Keep the "scripts\compiled" folder and the boss_battle.gscc inside it. Kronos crashes at
    startup if that folder is missing.
-4. Optional: copy the "fast_restart" folder the same way (keep its scripts\compiled folder too).
-5. Start the game and make sure "Boss Battle" (and "Fast Restart" if you copied it) is enabled in
-   the Kronos Mods menu.
+4. Start the game and make sure "Boss Battle" is enabled in the Kronos Mods menu.
 
 UPDATING TO A NEW TEST BUILD
 1. Close the game completely.
 2. Copy the new files over the old ones.
-3. Make sure boss_battle\scripts\compiled\boss_battle.gscc was replaced by the new one too.
-   Coming from 0.4: Fast Restart now lives in its own "fast_restart" folder; copy it if you want it.
-4. Start the game. Quitting to the menu is not enough; the game keeps the old script until a full
+3. Make sure boss_battle\scripts\compiled\boss_battle.gscc was replaced by the new one too.4. Start the game. Quitting to the menu is not enough; the game keeps the old script until a full
    restart.
 
 UNINSTALL
-Disable it in the Kronos Mods menu, or delete the boss_battle folder (and fast_restart).
+Disable it in the Kronos Mods menu, or delete the boss_battle folder.
 
 
 HOW TO PLAY
