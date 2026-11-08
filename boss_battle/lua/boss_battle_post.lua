@@ -7,6 +7,7 @@
 --    ("<map> Directed Completion") are left alone.
 -- 2. Draws the boss fight timer in the top-right corner from the kronos_boss_timer dvar, which
 --    scripts/boss_battle.gsc sets during the fight. Digits come from the BO3 HUD kit's glyphs.
+--    The relic menu is drawn the same way.
 do
   local function log(s) pcall(function() KRONOS.log("boss battle: " .. tostring(s)) end) end
 
@@ -70,10 +71,16 @@ do
 
   -- Fight timer.
   local HD = rawget(_G, "xhashdvar") or rawget(_G, "PushXHashDvar") or (type(clua) == "table" and clua.PushXHashDvar)
-  local function timer_text()
-    local ok, v = pcall(function() return rawget(_G, "Dvar").GetDvarString(HD("kronos_boss_timer")) end)
+  local function dvar_text(name)
+    local ok, v = pcall(function() return rawget(_G, "Dvar").GetDvarString(HD(name)) end)
     if ok and type(v) == "string" then return v end
     return ""
+  end
+  -- The BO3 HUD kit, or nil plus the reason.
+  local function hud_kit()
+    local ok, kit = pcall(KRONOS.require, "bo3_hud")
+    if ok and type(kit) == "table" and type(kit.textRow) == "function" then return kit end
+    return nil, kit
   end
   local function in_frontend()
     local ok, v = pcall(function() return Engine[KRONOS.H("InFrontend")]() end)
@@ -93,11 +100,6 @@ do
   end
   -- Relic menu (left side) from the kronos_bb_relic_menu dvar: "|"-separated lines, each led by a
   -- code letter (h header, f footer, n relic, o relic on, c cursor, b cursor on a relic that's on).
-  local function dvar_text(name)
-    local ok, v = pcall(function() return rawget(_G, "Dvar").GetDvarString(HD(name)) end)
-    if ok and type(v) == "string" then return v end
-    return ""
-  end
   local function rgb(r, g, b) return r * 65536 + g * 256 + b end
   local MENU_STYLE = {
     h = rgb(245, 200, 80), f = rgb(170, 170, 170), n = rgb(235, 235, 235),
@@ -108,6 +110,27 @@ do
     name = string.gsub(name, "^relic_", "")
     name = string.gsub(name, "_", " ")
     return string.upper(name)
+  end
+  -- GSC sends loot names (sat_zm_firefly_xi_relic). The display name is the "name" field of the
+  -- relic's script bundle "relic:<loot name>" (what the altar's hint card shows), localized.
+  -- Keys are fnv1a64 hashes, as Kronos's LUIFPSCounter.lua uses them: getscriptbundle, name, localize.
+  local relic_names = {}
+  local function relic_name(loot)
+    if relic_names[loot] then return relic_names[loot] end
+    local name
+    pcall(function()
+      local bundle = Engine[KRONOS.H("f06093d047200548")](clua.PushXHashAsset("relic:" .. loot))
+      local raw = bundle[KRONOS.H("c4bcadba8e631b86")]
+      local ok, text = pcall(Engine[KRONOS.H("aed84c33ec5f01ea")], raw)
+      if not (ok and type(text) == "string") then text = raw end
+      -- An unresolved key comes back as "FILE/KEY"; keep the fallback then.
+      if type(text) == "string" and text ~= "" and not string.find(text, "^[%w_]+/[%w_]+$") then
+        name = string.upper((string.gsub(text, "%^%d", "")))
+      end
+    end)
+    log("relic name: " .. loot .. " -> " .. tostring(name))
+    relic_names[loot] = name or pretty(loot)
+    return relic_names[loot]
   end
   local menu = nil
   pcall(function()
@@ -123,10 +146,10 @@ do
     for line in string.gmatch(text, "[^|]+") do
       i = i + 1
       local code, body = string.sub(line, 1, 1), string.sub(line, 2)
-      if code == "c" then body = "> " .. pretty(body)
-      elseif code == "b" then body = "> " .. pretty(body) .. "   ON"
-      elseif code == "o" then body = "   " .. pretty(body) .. "   ON"
-      elseif code == "n" then body = "   " .. pretty(body)
+      if code == "c" then body = "> " .. relic_name(body)
+      elseif code == "b" then body = "> " .. relic_name(body) .. "   ON"
+      elseif code == "o" then body = "   " .. relic_name(body) .. "   ON"
+      elseif code == "n" then body = "   " .. relic_name(body)
       end
       if not menu_rows[i] then
         -- textRow units are scaled x1.5 by the kit: 18 units per line.
@@ -143,22 +166,22 @@ do
     local frontend = in_frontend()
     local menu_text = frontend and "" or dvar_text("kronos_bb_relic_menu")
     if menu_text ~= menu_shown then
-      local ok, kit = pcall(KRONOS.require, "bo3_hud")
-      if ok and type(kit) == "table" and type(kit.textRow) == "function" then
+      local kit = hud_kit()
+      if kit then
         local drew, err = pcall(draw_menu, menu_text, kit)
         if not drew and not warned then log("relic menu: " .. tostring(err)); warned = true end
       end
     end
-    local text = timer_text()
+    local text = dvar_text("kronos_boss_timer")
     -- Personal best (kronos_boss_pb) only shows with the timer.
     local pb = ""
     if frontend then text = "" end
     if text ~= "" then pb = dvar_text("kronos_boss_pb") end
     if text .. "|" .. pb == shown then return end
     if not row and text ~= "" then
-      local ok, kit = pcall(KRONOS.require, "bo3_hud")
-      if not ok or type(kit) ~= "table" or type(kit.textRow) ~= "function" then
-        if not warned then log("timer: bo3_hud kit unavailable " .. tostring(kit)) end
+      local kit, why = hud_kit()
+      if not kit then
+        if not warned then log("timer: bo3_hud kit unavailable " .. tostring(why)) end
         warned = true
         return
       end

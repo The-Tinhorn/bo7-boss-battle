@@ -5,7 +5,9 @@
 #using scripts\mp\arsenal;
 #using scripts\mp\crafting_table;
 #using scripts\mp\currency;
+#using scripts\mp\common\utility\inventory_utility;
 #using scripts\mp\common\utility\loot;
+#using scripts\mp\common\utility\musicbank_utility;
 #using scripts\mp\electric_power_switch;
 #using scripts\mp\equipment;
 #using scripts\mp\interaction;
@@ -27,7 +29,7 @@
 
 // Boss Battle for every BO7 launch map, played from the Directed tile (shown as Boss Battle).
 // Spawn is a zombie-free lobby with maxed essence/salvage, PaP, Wunderfizz, a crafting table and
-// wonder weapon loot; walking into the relic portal starts the map's real boss fight through its
+// wonder weapon loot; using a relic portal starts the map's real boss fight through its
 // boss file's own dev quick start (zm_sat_<map>_boss_fight.gsc, BO7 dump PC_S6L_20261016), which
 // sets the round and teleports players itself.
 // No #using of map scripts (map-only scripts aren't resident elsewhere). Instead we provide the
@@ -52,6 +54,8 @@ autoexec init()
     level.bb_portal_rounds = [40, 100];
     level.bb_portal_colors = ["yellow", "red"];
     level.bb_portal_codes = ["^3", "^1"];
+    level.bb_portal_lift = 50;      // portal centre above the floor; raise or lower here
+    level.bb_armor_lift = 50;       // armor chalk centre above the floor (chest height); raise or lower here
     level.bb_fight_round = 40;
     level.bb_missed = 0;            // objects that found no open spot (diagnostics)
     setdvar("kronos_boss_timer", "");  // hides a timer left over from a quit match
@@ -130,6 +134,11 @@ on_spawned(params)
         return;
     }
     level.bb_lobby = 1;
+    // No out-of-bounds damage in the gear-up area. On Rex Infernus it sits behind shut doors in zones
+    // that aren't enabled, and zm_player hurts anyone outside an enabled zone every 3 s. This is the
+    // switch exfil uses to turn that check off; start_fight puts it back.
+    level.bb_oob_off_was = level.var_1a7d5de49b6970b1;
+    level.var_1a7d5de49b6970b1 = 1;
     zm_round_spawning::pause_round_spawning(1, "boss_battle_lobby");
     zm_exfil::disable_zm_exfil(1);
     level thread lobby_upkeep();
@@ -169,6 +178,7 @@ spawn_lobby_after_load()
     {
         relocate_to_pap();
         level thread give_grapples();
+        level thread rex_red_pedestals();
     }
     level thread spawn_lobby();
 }
@@ -290,11 +300,6 @@ lobby_upkeep()
 // search out; everything that crosses a wait lives on level.
 spawn_lobby()
 {
-    // Splash in the bold centre-screen text open_sesame used; ^5 is the light blue colour code.
-    foreach (player in level.players)
-    {
-        player iprintlnbold("^5SUBSCRIBE TO TINHORN");
-    }
     level.bb_used = [];
     level.bb_cleanup_items = [];
     level.bb_cleanup_wb = [];
@@ -316,7 +321,6 @@ spawn_lobby()
     // Skip the "buy N perks / reach round N" wait before the Wunderfizz appears.
     level.var_865fa84b8f7cc220 = 1;
     fizz thread perk_machines::function_e3d3bfcc06c89350(paid);
-    level thread bb_store_later("wunderfizz", fizz, 10);
     waitframe();
 
     place(40, 140, 48, 110);
@@ -333,22 +337,30 @@ spawn_lobby()
     waitframe();
 
     spawn_wonder_loot();
+    spawn_aether_tools();
 
     // Relic-trial portals, spawned the way the relic system does (spawn, wait a frame, set the vfx
     // part). If the scriptable isn't loaded, fall back to Ashes' garage teleport pad.
+    // Each portal gets a Use prompt that starts its fight.
     level.bb_portals = [];
     level.bb_portal_hinted = [];
+    level.bb_portal_uses = [];
     level.bb_pi = 0;
     while (level.bb_pi < level.bb_portal_spots.size)
     {
         level.bb_portal_hinted[level.bb_pi] = 0;
-        portal_relic(spawnscriptable("zm_relic_portals", level.bb_portal_spots[level.bb_pi], face_spawn(level.bb_portal_spots[level.bb_pi])), level.bb_portal_colors[level.bb_pi]);
+        level.bb_portal_mid = portal_mid(level.bb_portal_spots[level.bb_pi]);
+        portal_relic(spawnscriptable("zm_relic_portals", level.bb_portal_mid, portal_angles(level.bb_portal_spots[level.bb_pi])), level.bb_portal_colors[level.bb_pi]);
         if (!isdefined(level.bb_portals[level.bb_pi]))
         {
             portal_pad(spawnscriptable(%"zm_sat_firefly_garage_player_teleport_station", level.bb_portal_spots[level.bb_pi], face_spawn(level.bb_portal_spots[level.bb_pi])));
         }
+        // No hint string: the one localized-string literal tried here (&"shared_hintstrings/...")
+        // came with a client loading-screen hang on Mantis (2026-11-05). portal_watch's label says USE.
+        portal_use_keep(interaction::register_interact(level.bb_portal_mid, 80, &portal_used));
         level.bb_pi++;
     }
+    bb_store("portal_uses", level.bb_portal_uses.size);
     bb_store("portal", "" + level.bb_portal_spots[0]);
     bb_store("open_spots_missed", level.bb_missed);
     level thread portal_watch();
@@ -362,12 +374,22 @@ spawn_lobby()
 // Kowakujo's PaP quest hides every machine in the PaP list when round logic begins
 // (zm_sat_hornet_pap_quest::pap_machine_setup, which sets flag "pap_setup" when done), ours too if
 // it's already listed, so there ours waits for that first (20 s cap). Own thread: nothing else waits.
+// Astra does the same (zm_sat_ruby_quest_pap::setup_pap_machine) right after flag "begin_round_logic"
+// with no done flag, so there ours waits for that flag plus a second for the hide to run.
 spawn_lobby_pap()
 {
     level.bb_pap_wait = gettime() + 20000;
     while (level.bb_map == "hornet" && !bb_flag("pap_setup") && gettime() < level.bb_pap_wait)
     {
         wait 0.5;
+    }
+    while (level.bb_map == "ruby" && !bb_flag("begin_round_logic") && gettime() < level.bb_pap_wait)
+    {
+        wait 0.5;
+    }
+    if (level.bb_map == "ruby")
+    {
+        wait 1;
     }
     bb_store("pap_waited_ms", 20000 - (level.bb_pap_wait - gettime()));
     level.bb_pap = spawnstruct();
@@ -480,6 +502,7 @@ relic_unlocks_later()
     bb_store("relic_unlocks", 1);
 }
 
+
 // What Cursed relic tier 3 unlocks (zm_relics' tier setter), always on in Boss Battle: gold armor
 // from the armor wallbuy (tier 1+), ultra rarity (tier 2+) and Pack-a-Punch tier 4 (tier 3).
 // Relic points start at 9, so switching relics on and off never drops below tier 3.
@@ -511,11 +534,10 @@ spawn_relic_altar()
         return;
     }
     place(180, 240, 64, 150);
-    level.bb_relic_pos = level.bb_spot;
+    level.bb_relic_pos = portal_mid(level.bb_spot);
     level.bb_relic_i = 0;
-    level.bb_relic_hinted = 0;
-    relic_altar_keep(spawnscriptable("zm_relic_portals", level.bb_relic_pos, face_spawn(level.bb_relic_pos)));
-    level.bb_relic_use = interaction::register_interact(level.bb_relic_pos + (0, 0, 40), 70, &relic_used, &relic_hint);
+    relic_altar_keep(spawnscriptable("zm_relic_portals", level.bb_relic_pos, portal_angles(level.bb_spot)));
+    level.bb_relic_use = interaction::register_interact(level.bb_relic_pos, 70, &relic_used, &relic_hint);
     bb_store("relic_altar", isdefined(level.bb_relic_use));
     while (isdefined(level.bb_lobby))
     {
@@ -614,7 +636,6 @@ spawn_arsenal_and_gum()
     arsenal.script_start = 1;  // starts enabled instead of waiting on power
     arsenal thread arsenal::init_arsenal_machine(undefined);
     level.bb_arsenal = arsenal;  // removed at fight start (it stayed in Paradox Junction's arena)
-    level thread bb_store_arsenal_later(arsenal);
     waitframe();
 
     place(-140, 120, 48, 110);
@@ -654,12 +675,6 @@ spawn_magicbox()
     bb_store("magicbox", isdefined(box.mdl_magicbox));
 }
 
-bb_store_arsenal_later(s)
-{
-    wait 5;
-    bb_store("arsenal", isdefined(s.mdl_arsenal));
-}
-
 // Open-floor search. Rings outward from the spawn (min_r, +40 per ring), preferred direction first
 // then alternating 22.5 degrees either side, and takes the first spot that is on the navmesh, on
 // the spawn's floor, has walkable floor `clear` units all round (keeps machines out of walls and
@@ -685,7 +700,7 @@ place(yaw_offset, min_r, clear, gap)
     {
         level.bb_missed = level.bb_missed + 1;
         want = level.bb_spawn_origin + anglestoforward((0, level.bb_spawn_angles[1] + yaw_offset, 0)) * min_r;
-        level.bb_spot = machine_spot(want, getclosestpointonnavmesh(want, 128));
+        level.bb_spot = getclosestpointonnavmesh(want, 128) ?? want;
     }
     level.bb_used[level.bb_used.size] = level.bb_spot;
 }
@@ -736,8 +751,21 @@ near(found, probe)
 
 face_spawn(spot)
 {
-    dir = vectortoangles(level.bb_spawn_origin - spot);
-    return (0, dir[1], 0);
+    return face_point(level.bb_spawn_origin, spot);
+}
+
+// The relic portal model is authored lying flat: every map places it at pitch ~90, which stands it
+// up with its face toward the yaw. Here the yaw points at the spawn, so it faces the gear-up area.
+portal_angles(spot)
+{
+    yaw = face_spawn(spot);
+    return (90, yaw[1], 0);
+}
+
+// Upright portal centre: the real floor under the nav point, plus level.bb_portal_lift.
+portal_mid(spot)
+{
+    return floor_spot(spot) + (0, 0, level.bb_portal_lift);
 }
 
 // Armor wallbuys, one per armor level, in a row to the right of the spawn at chest height.
@@ -759,7 +787,6 @@ spawn_armor_wallbuys()
             }
         }
     }
-    bb_store("armor_names", bb_join(level.bb_armor_names));
     if (level.bb_armor_names.size == 0)
     {
         bb_store("armor_wallbuy", "none_on_map");
@@ -782,11 +809,11 @@ spawn_armor_wallbuys()
     {
         place(90, 100, 32, 70);
         w = spawnstruct();
-        // Laid flat on the floor, face up, top edge away from the spawn so it reads upright.
-        // Height above the floor: 2 sat too low (Tinhorn 2026-11-05), raise again here if needed.
-        w.origin = floor_spot(level.bb_spot) + (0, 0, 8);
+        // Upright like a real wall chalk. A wallbuy's face points along its RIGHT vector (wallbuy.gsc
+        // drops bought items at angles + (0, -90, 0)), so yaw + 90 turns the face to the spawn.
+        w.origin = floor_spot(level.bb_spot) + (0, 0, level.bb_armor_lift);
         yaw = face_spawn(level.bb_spot);
-        w.angles = (-90, yaw[1], 0);
+        w.angles = (0, yaw[1] + 90, 0);
         w.script_noteworthy = name;
         wallbuy::function_d925a3a846d30612(w, undefined, name);
         if (isdefined(w.wallbuy_scriptable))
@@ -799,8 +826,8 @@ spawn_armor_wallbuys()
     bb_store("armor_wallbuy", level.bb_armor_made);
 }
 
-// Navmesh points can sit under the visible floor (Kowakujo's sank the flat armor chalk), so the
-// chalk rests on whatever a ray straight down hits; the navmesh height if the ray misses.
+// Navmesh points can sit under the visible floor (Kowakujo's sank the armor chalk), so heights are
+// measured from whatever a ray straight down hits; the navmesh height if the ray misses.
 floor_spot(spot)
 {
     return floor_hit(spot, trace::ray_trace(spot + (0, 0, 40), spot - (0, 0, 40)));
@@ -810,20 +837,9 @@ floor_hit(spot, hit)
 {
     if (hit["fraction"] < 1)
     {
-        bb_store("armor_floor_lift", hit["position"][2] - spot[2]);
         return hit["position"];
     }
     return spot;
-}
-
-bb_join(list)
-{
-    text = "";
-    foreach (item in list)
-    {
-        text = text + item + " ";
-    }
-    return text;
 }
 
 // One of each wonder weapon per player as floor loot, each on its own open spot to the left of the
@@ -854,27 +870,169 @@ spawn_wonder_loot()
     bb_store("wonder_loot", level.bb_placed);
 }
 
-// Same drop as creator_live's wonder weapon gift; critical + var_fd47e835523b473f stop despawning.
+// Two ultra Aether Tools per player on the floor, next to the loot (Directed's Arsenal menu has no
+// tier-5 row to unlock). zm_sat_item_aether_tool_5 is the last entry of zm.gsc's dev upgrade list
+// (give_player_weapon_upgrades, hash 7a0163ba7eb3481), spawned the same way. state.json aether_ultra
+// = tools placed (0 means the game refused the item in this mode).
+spawn_aether_tools()
+{
+    level.bb_at_bundle = getscriptbundle("itemspawnentry:zm_sat_item_aether_tool_5");
+    level.bb_at_placed = 0;
+    level.bb_at_n = 0;
+    while (isdefined(level.bb_at_bundle) && level.bb_at_n < level.players.size * 2)
+    {
+        place(-90, 90, 16, 44);
+        level.bb_at_placed = level.bb_at_placed + keep_item(common_item::function_61c2c0251e742ffd(level.bb_at_bundle, 1, loot_opts(level.bb_spot)));
+        level.bb_at_n = level.bb_at_n + 1;
+        waitframe();
+    }
+    bb_store("aether_ultra", level.bb_at_placed);
+}
+
+// Same drop options as creator_live's wonder weapon gift; critical + var_fd47e835523b473f stop despawning.
+loot_opts(spot)
+{
+    options = common_item::function_f5dfaa3bbdf99a33(spot, spot + (0, 0, 38));
+    options.critical = 1;
+    options.var_fd47e835523b473f = 1;
+    return options;
+}
+
 drop_loot(bundle, spot)
 {
     if (!isdefined(bundle))
     {
         return 0;
     }
-    options = common_item::function_f5dfaa3bbdf99a33(spot, spot + (0, 0, 38));
-    options.critical = 1;
-    options.var_fd47e835523b473f = 1;
-    keep_item(item_weapon::function_b960bc85ea91de14(bundle, options));
+    options = loot_opts(spot);
+    // Paradox: our Sundergat item hands over a plain Blundergat (2026-11-07 log: held
+    // "sat_ww_mantis_zm pap 0 att sat_zm_ww_mantis sat_rec_ww_mantis"). PaP 0 as in the game's dev drop
+    // (weap_ww_mantis::function_9c301135b2aa5641); the item is tagged and sundergat_pickup converts it.
+    level.bb_dl_sg = level.bb_map == "mantis" && level.bb_loot[level.bb_n % level.bb_loot.size] == "zm_sat_item_weapon_ww_mantis_upgraded";
+    if (level.bb_dl_sg)
+    {
+        options.overridepaplvl = 0;
+        sundergat_hook();
+    }
+    level.bb_dl_item = item_weapon::function_b960bc85ea91de14(bundle, options);
+    if (level.bb_dl_sg && isdefined(level.bb_dl_item))
+    {
+        level.bb_dl_item.bb_sundergat = 1;
+    }
+    keep_item(level.bb_dl_item);
     return 1;
 }
 
+// Per-player pickup hook, the way weap_ww_mantis registers its own Sundergat pickup message.
+// ponytail: only players already in the match; a co-op player joining later gets no hook.
+sundergat_hook()
+{
+    if (isdefined(level.bb_sg_hooked))
+    {
+        return;
+    }
+    level.bb_sg_hooked = 1;
+    foreach (player in level.players)
+    {
+        player callback::add(#"player_used_item", &sundergat_pickup);
+    }
+}
+
+// player_used_item fires before the item's use gives the weapon, so wait, then if the hand holds a
+// plain Blundergat, turn it into the Sundergat exactly like weap_ww_mantis::function_b63980f0807dbada
+// (the game's own Blundergat -> Sundergat upgrade, PaP 0 branch). state.json sundergat_fix.
+sundergat_pickup(params)
+{
+    if (!isdefined(params.item) || !(isdefined(params.item.bb_sundergat) || has_attachment(params.item.weaponobj, "sat_bar_ww_mantis")))
+    {
+        return;
+    }
+    self.bb_sg_tag = isdefined(params.item.bb_sundergat);
+    self endon(#"death_or_disconnect");
+    wait 0.5;
+    // Search the whole loadout, not just the hand: the raise animation may still be playing.
+    self.bb_sg_w = undefined;
+    self.bb_sg_list = self getweaponslistprimaries();
+    self.bb_sg_i = 0;
+    while (self.bb_sg_i < self.bb_sg_list.size)
+    {
+        if (self.bb_sg_list[self.bb_sg_i].basename == "sat_ww_mantis_zm" && !has_attachment(self.bb_sg_list[self.bb_sg_i], "sat_bar_ww_mantis"))
+        {
+            self.bb_sg_w = self.bb_sg_list[self.bb_sg_i];
+        }
+        self.bb_sg_i = self.bb_sg_i + 1;
+    }
+    if (!isdefined(self.bb_sg_w))
+    {
+        bb_store("sundergat_fix", "left alone: no plain Blundergat held (item tag " + self.bb_sg_tag + ")");
+        return;
+    }
+    if (self pack_a_punch::get_pap_level(self.bb_sg_w) > 0)
+    {
+        bb_store("sundergat_fix", "skipped: held Blundergat is PaP " + self pack_a_punch::get_pap_level(self.bb_sg_w));
+        return;
+    }
+    self.bb_sg_new = self.bb_sg_w withattachment("sat_bar_ww_mantis");
+    if (!isdefined(self.bb_sg_new))
+    {
+        bb_store("sundergat_fix", "withattachment failed");
+        return;
+    }
+    self.bb_sg_new = self.bb_sg_new withoutattachment("sat_rec_ww_mantis");
+    self.bb_sg_new = self.bb_sg_new withattachment("sat_rec_ww_mantis2");
+    // Stream it in first, the way br_spectate / magicbox / wallbuy do, or the give loads it on the spot
+    // and the whole game freezes for seconds (2026-11-07 test). The Blundergat stays in hand meanwhile.
+    self.bb_sg_start = gettime();
+    self loadweaponsforplayer([self.bb_sg_new], 1);
+    waitframe();
+    while (!self hasloadedviewweapons([self.bb_sg_new]) && gettime() - self.bb_sg_start < 10000)
+    {
+        waitframe();
+    }
+    self.bb_sg_ms = gettime() - self.bb_sg_start;
+    if (!self hasweapon(self.bb_sg_w))
+    {
+        bb_store("sundergat_fix", "skipped: Blundergat gone after " + self.bb_sg_ms + " ms load");
+        return;
+    }
+    self inventory_utility::_takeweapon(self.bb_sg_w);
+    self setweaponammoclip(self.bb_sg_new, weaponclipsize(self.bb_sg_new));
+    self setweaponammostock(self.bb_sg_new, weaponstartammo(self.bb_sg_new));
+    self inventory_utility::_giveweapon(self.bb_sg_new);
+    self inventory_utility::_switchtoweaponimmediate(self.bb_sg_new);
+    self item_weapon::function_40e1cbd0e1f47d1a(self.bb_sg_new, 6);
+    bb_store("sundergat_fix", "converted (item tag " + self.bb_sg_tag + ", load " + self.bb_sg_ms + " ms, has it " + self hasweapon(self.bb_sg_new) + ")");
+}
+
+has_attachment(w, name)
+{
+    if (!isdefined(w) || !isdefined(w.attachments))
+    {
+        return 0;
+    }
+    return arraycontains(w.attachments, name);
+}
+
 // Kept so start_fight can clear what nobody picked up (Paradox Junction's arena is the spawn).
+// One item or an array of them; returns how many were kept.
 keep_item(item)
 {
-    if (isdefined(item))
+    if (!isdefined(item))
     {
-        level.bb_cleanup_items[level.bb_cleanup_items.size] = item;
+        return 0;
     }
+    level.bb_keep = item;
+    if (!isarray(level.bb_keep))
+    {
+        level.bb_keep = [item];
+    }
+    level.bb_kept = 0;
+    while (level.bb_kept < level.bb_keep.size)
+    {
+        level.bb_cleanup_items[level.bb_cleanup_items.size] = level.bb_keep[level.bb_kept];
+        level.bb_kept = level.bb_kept + 1;
+    }
+    return level.bb_kept;
 }
 
 // Removes the lobby's floor loot and armor wallbuys when the fight starts. Machines stay.
@@ -951,20 +1109,21 @@ portal_pad(pad)
     bb_store("portal_kind", "garage_pad");
 }
 
-// Wunderfizz spawns after a short wait inside the game function; report whether it made it.
-bb_store_later(key, s, seconds)
+portal_use_keep(use)
 {
-    wait seconds;
-    bb_store(key, isdefined(s.mdl_perk_machine));
+    if (!isdefined(use))
+    {
+        return;
+    }
+    use.bb_round = level.bb_portal_rounds[level.bb_pi];
+    level.bb_portal_uses[level.bb_portal_uses.size] = use;
 }
 
-machine_spot(wanted, nav)
+// Use on a yellow/red portal (self = its interact): start that portal's fight.
+portal_used(player)
 {
-    if (isdefined(nav))
-    {
-        return nav;
-    }
-    return wanted;
+    level.bb_fight_round = self.bb_round;
+    level thread start_fight();
 }
 
 portal_watch()
@@ -986,11 +1145,6 @@ portal_watch()
                 {
                     continue;
                 }
-                if (distance2dsquared(player.origin, spot) < 60 * 60)
-                {
-                    level.bb_fight_round = level.bb_portal_rounds[i];
-                    level thread start_fight();
-                }
                 if (distance2dsquared(player.origin, spot) < 220 * 220)
                 {
                     near_any = 1;
@@ -1001,7 +1155,7 @@ portal_watch()
             {
                 foreach (player in level.players)
                 {
-                    player iprintlnbold(level.bb_portal_codes[i] + "Round " + level.bb_portal_rounds[i] + " ^7boss fight");
+                    player iprintlnbold(level.bb_portal_codes[i] + "Round " + level.bb_portal_rounds[i] + " ^7boss fight - press USE");
                 }
             }
             level.bb_portal_hinted[i] = near_any;
@@ -1029,12 +1183,28 @@ start_fight()
         return;
     }
     level.bb_lobby = undefined;  // stops lobby_upkeep and portal_watch
+    level.var_1a7d5de49b6970b1 = level.bb_oob_off_was;
     zm_round_spawning::pause_round_spawning(0, "boss_battle_lobby");
+    // The boss files mute round_start / round_end music for the fight, but past round 10 a round
+    // change plays round_start_short / round_end_short instead (zm_music), so the quick start's
+    // change to round 40 / 100 played round music over the start of the fight.
+    foreach (cue in [#"round_start", #"round_end", #"round_start_short", #"round_end_short"])
+    {
+        musicbank_utility::function_683e33ddcb824d18(cue);
+        musicbank_utility::function_4f253fd35ec68cbc(level.players, cue);
+    }
     foreach (portal in level.bb_portals)
     {
         if (isdefined(portal))
         {
             portal freescriptable();
+        }
+    }
+    foreach (use in level.bb_portal_uses)
+    {
+        if (isdefined(use))
+        {
+            use delete();
         }
     }
     clear_lobby_drops();
@@ -1081,7 +1251,6 @@ fight_watch()
     }
     level.bb_t0 = gettime();
     bb_store("fight", "timing");
-    level thread fight_diag();
     while (!isdefined(level.bb_boss_dead) && !bb_flag(boss_done_flag()))
     {
         setdvar("kronos_boss_timer", fmt_time(gettime() - level.bb_t0));
@@ -1192,23 +1361,30 @@ give_grapples()
     bb_store("grapple", level.players.size);
 }
 
-// Zombie counts for the first minute of the fight (state.json fight_ai_N: all AI alive,
-// arena_spawns: spawn points the fight can use in zone_boss_arena).
-fight_diag()
+// Rex Infernus: every grapple pedestal hands out the red (upgraded) hook, as if the main quest's eye
+// sat in each one. Placing the eye only sets these four fields on its pedestal (zm_sat_scarab_mq
+// function_660c7a8837bf677d); zm_ncfdpedestal::give_grappling_hook then gives
+// equip_grappling_hook_upgraded. state.json "red_pedestals" = how many were changed.
+rex_red_pedestals()
 {
-    if (level.bb_map == "scarab")
+    level.bb_pedestal_until = gettime() + 60000;
+    while (!bb_flag("ncfds_spawned") && gettime() < level.bb_pedestal_until)
     {
-        bb_store_size("arena_spawns", zone_spawner::function_20c574a6ba7cc5c6(["zone_boss_arena"], "zombie_base"));
+        wait 0.5;
     }
-    for (i = 1; i <= 6; i++)
+    if (!isdefined(level.ncfd_pedestals))
     {
-        wait 10;
-        bb_store_size("fight_ai_" + (i * 10), getaiarray());
-        if (level.bb_map == "scarab")
-        {
-            rex_adds_diag();
-        }
+        bb_store("red_pedestals", "none");
+        return;
     }
+    foreach (pedestal in level.ncfd_pedestals)
+    {
+        pedestal.var_c62a3e81dd2e88bd = 1;
+        pedestal.interact.var_c62a3e81dd2e88bd = 1;
+        pedestal.vfx.var_c62a3e81dd2e88bd = 1;
+        pedestal.vfx_off.var_c62a3e81dd2e88bd = 1;
+    }
+    bb_store("red_pedestals", level.ncfd_pedestals.size);
 }
 
 // Rex Infernus snaps its arena spawn points to the floor (getgroundposition, keeping .origin_old)
@@ -1263,95 +1439,15 @@ rex_fix_arena_spawns()
     bb_store("rex_spawn_fix", moved + "/" + total + " moved, deepest was " + int(deepest) + " under");
 }
 
-// Rex Infernus only spawns arena adds while fewer than 30 zombies are within 1350 units (2D, any
-// height) of the arena centre. Tinhorn sees none, yet ~30 stay alive all fight, so this logs where
-// they are (state.json rex_*, latest sample wins): in the arena / below / above / outside it, how
-// many ignore everyone or have a target, one example, and the host's position.
-rex_adds_diag()
-{
-    boss = level.s_scarab_boss.entity;
-    if (!isdefined(boss) || !isdefined(boss.var_cb0f79c5c25b23f4))
-    {
-        bb_store("rex_center", "none");
-        return;
-    }
-    c = boss.var_cb0f79c5c25b23f4;
-    n_in = 0;
-    n_low = 0;
-    n_high = 0;
-    n_far = 0;
-    n_ignore = 0;
-    n_enemy = 0;
-    sample = "-";
-    host = level.players[0];
-    foreach (ai in getaiarray())
-    {
-        if (ai == boss)
-        {
-            continue;
-        }
-        if (distance2dsquared(ai.origin, c) > 1350 * 1350)
-        {
-            n_far++;
-        }
-        else if (ai.origin[2] < c[2] - 200)
-        {
-            n_low++;
-        }
-        else if (ai.origin[2] > c[2] + 200)
-        {
-            n_high++;
-        }
-        else
-        {
-            n_in++;
-        }
-        if (isdefined(ai.ignoreall) && ai.ignoreall)
-        {
-            n_ignore++;
-        }
-        if (isdefined(ai.enemy))
-        {
-            n_enemy++;
-        }
-        if (sample == "-" && isdefined(host))
-        {
-            sample = txt(ai.subclass) + " " + ai.origin + " d" + int(distance(ai.origin, host.origin));
-        }
-    }
-    bb_store("rex_center", "" + c);
-    bb_store("rex_ai_in_low_high_far", n_in + "/" + n_low + "/" + n_high + "/" + n_far);
-    bb_store("rex_ai_ignoreall", n_ignore);
-    bb_store("rex_ai_with_enemy", n_enemy);
-    bb_store("rex_ai_sample", sample);
-    bb_store("rex_adds_paused", bb_flag("scarab_pause_boss_adds"));
-    if (isdefined(host))
-    {
-        bb_store("rex_host", "" + host.origin + " ignoreme " + txt(host.ignoreme));
-    }
-}
-
-bb_store_size(key, arr)
-{
-    if (isdefined(arr))
-    {
-        bb_store(key, arr.size);
-    }
-}
-
 // Directed's gametype bundle stays loaded all match. The zombie scripts read from it: speed caps
 // (super sprint -> sprint, sprint -> run), swapped health and damage tables, and a health multiplier.
-// Cleared for the fight so it plays like standard Zombies. Old values go to state.json.
+// Cleared for the fight so it plays like standard Zombies.
 drop_directed_bundle()
 {
     if (!isdefined(level.gametypebundle))
     {
         return;
     }
-    bb_store("directed_speed_caps", txt(level.gametypebundle.var_25934546ad2751f3) + "/" + txt(level.gametypebundle.var_ed84de94958fe6c0));
-    bb_store("directed_health_mult", txt(level.gametypebundle.var_6cfc57a4b0d987d));
-    bb_store("directed_health_swaps", isdefined(level.gametypebundle.var_b608dbcf2a9c24e6));
-    bb_store("directed_damage_swaps", isdefined(level.gametypebundle.var_e3501b33c18021fd));
     level.gametypebundle.var_25934546ad2751f3 = 0;
     level.gametypebundle.var_ed84de94958fe6c0 = 0;
     level.gametypebundle.var_6cfc57a4b0d987d = undefined;
@@ -1359,20 +1455,18 @@ drop_directed_bundle()
     level.gametypebundle.var_e3501b33c18021fd = undefined;
 }
 
-txt(v)
-{
-    if (!isdefined(v))
-    {
-        return "-";
-    }
-    return "" + v;
-}
-
 // Every AI's starting health goes through this shared func (zombie_utils / zombie_init). During a
 // yellow-portal fight a boss (aicategory "boss") is priced at the map's vanilla solo boss round.
 boss_solo_health(bundle, round, flag)
 {
-    if (isdefined(round) && isdefined(self.aicategory) && self.aicategory == "boss" && round > solo_boss_round())
+    // zombie_init prices a new AI's health (zombie_init.gsc line 226) before it copies aicategory onto
+    // it (line 298), so at spawn only the settings bundle it set at line 67 knows it's a boss.
+    cat = self.aicategory;
+    if (!isdefined(cat) && isdefined(self.var_d6894f01a36b4ff3))
+    {
+        cat = self.var_d6894f01a36b4ff3.aicategory;
+    }
+    if (isdefined(round) && isdefined(cat) && cat == "boss" && round > solo_boss_round())
     {
         round = solo_boss_round();
         bb_store("boss_health_round", round);
