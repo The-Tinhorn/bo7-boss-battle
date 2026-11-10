@@ -9,8 +9,10 @@
 #using scripts\mp\arsenal;
 #using scripts\mp\common\perks\perkpackage;
 #using scripts\mp\common\perks\zombie\zombie_perks;
+#using scripts\mp\common\powerups\full_power;
 #using scripts\mp\crafting_table;
 #using scripts\mp\currency;
+#using scripts\mp\common\utility\inventory_utility;
 #using scripts\mp\common\utility\loot;
 #using scripts\mp\common\utility\musicbank_utility;
 #using scripts\mp\electric_power_switch;
@@ -352,6 +354,7 @@ spawn_lobby()
     level thread spawn_lobby_pap();
     waitframe();
 
+    spawn_wonder_loot();
     spawn_aether_tools();
 
     // Relic-trial portals, spawned the way the relic system does (spawn, wait a frame, set the vfx
@@ -379,7 +382,9 @@ spawn_lobby()
     level thread spawn_armor_wallbuys();
     level thread spawn_arsenal_and_gum();
     level thread spawn_relic_altar();
-    level thread spawn_weapon_portal();
+    // T.E.D.D. weapon station OFF for now (Tinhorn, 2026-11-10). To bring it back: uncomment this
+    // and re-add its three help_show() lines. Its streaming fix (give_item) has never been played.
+    // level thread spawn_weapon_portal();
     level thread regear_watch();
     help_show();
 }
@@ -549,7 +554,7 @@ spawn_relic_altar()
         near_any = 0;
         foreach (player in level.players)
         {
-            if (isalive(player) && distance2dsquared(player.origin, level.bb_relic_pos) < 220 * 220)
+            if (isalive(player) && distance2dsquared(player.origin, level.bb_relic_pos) < 220 * 220 && !(isdefined(level.bb_weapon_use) && !near_altar(player)))
             {
                 near_any = 1;
             }
@@ -659,15 +664,7 @@ spawn_weapon_portal()
     level.bb_weapon_pos = floor_spot(level.bb_spot);
     // Faces the gear-up area; if the screen shows its back, add 180 to the yaw here.
     level.bb_weapon_angles = face_spawn(level.bb_spot);
-    // The T.E.D.D. task station model: the gametype's, the first source tedd_tasks::function_11956b77accdefca
-    // picks. Only the object; the station's own prompt and trial logic aren't set up.
-    level.bb_weapon_portal = spawn("script_model", level.bb_weapon_pos);
-    level.bb_weapon_portal.angles = level.bb_weapon_angles;
-    if (isdefined(level.gametypebundle.var_491e3a85ef39e784))
-    {
-        level.bb_weapon_portal setmodel(level.gametypebundle.var_491e3a85ef39e784);
-    }
-    bb_store("weapon_station", isdefined(level.gametypebundle.var_491e3a85ef39e784));
+    weapon_station();
     // Where the station's own prompt sits (tedd_tasks: 20 in front, 55 up).
     level.bb_weapon_use = interaction::register_interact(level.bb_weapon_pos + anglestoforward(level.bb_weapon_angles) * 20 + (0, 0, 55), 70, &weapon_used);
     level.bb_weapon_i = 0;
@@ -678,7 +675,7 @@ spawn_weapon_portal()
         level.bb_wm_player = undefined;
         foreach (player in level.players)
         {
-            if (isalive(player) && distance2dsquared(player.origin, level.bb_weapon_pos) < 180 * 180)
+            if (isalive(player) && distance2dsquared(player.origin, level.bb_weapon_pos) < 180 * 180 && !near_altar(player))
             {
                 level.bb_wm_player = player;
             }
@@ -694,6 +691,81 @@ spawn_weapon_portal()
         wait 0.25;
     }
     setdvar("kronos_bb_weapon_menu", "");
+}
+
+// The station object, from the sources tedd_tasks::function_11956b77accdefca uses, in its order:
+// the gametype's model, else (when the map's T.E.D.D. spots name no scriptable) the T.E.D.D.
+// bundle's model, else that scriptable. Only the object; the station's own prompt and trial logic
+// aren't set up. A green relic portal stands in when the map has none. state.json weapon_station
+// says which one was used.
+// The model only shows once its scriptable parts are set (the idle look below): the 13:15 audit
+// dropped that step and the station went invisible on every map (2026-11-09 Ashes: "tedd model",
+// nothing visible, extreme packet loss on use).
+weapon_station()
+{
+    tedd_scriptable_name();
+    level.bb_weapon_model = level.gametypebundle.var_491e3a85ef39e784;
+    if (!isdefined(level.bb_weapon_model) && !isdefined(level.bb_tedd_scriptable) && isdefined(level.gamemodebundle.var_5d18653129c81780))
+    {
+        level.bb_tedd_bundle = getscriptbundle(level.gamemodebundle.var_5d18653129c81780);
+        if (isdefined(level.bb_tedd_bundle))
+        {
+            level.bb_weapon_model = level.bb_tedd_bundle.model;
+        }
+    }
+    if (isdefined(level.bb_weapon_model))
+    {
+        level.bb_weapon_portal = spawn("script_model", level.bb_weapon_pos);
+        level.bb_weapon_portal.angles = level.bb_weapon_angles;
+        level.bb_weapon_portal setmodel(level.bb_weapon_model);
+        level.bb_weapon_is_model = 1;
+        bb_store("weapon_station", "tedd model");
+    }
+    else if (isdefined(level.bb_tedd_scriptable))
+    {
+        level.bb_weapon_portal = spawnscriptable(level.bb_tedd_scriptable, level.bb_weapon_pos, level.bb_weapon_angles);
+        bb_store("weapon_station", "tedd scriptable " + level.bb_tedd_scriptable);
+    }
+    else
+    {
+        level.bb_weapon_portal = spawnscriptable("zm_relic_portals", portal_mid(level.bb_spot), portal_angles(level.bb_spot));
+        bb_store("weapon_station", "relic portal (no tedd station on this map)");
+    }
+    waitframe();
+    if (!isdefined(level.bb_weapon_portal))
+    {
+        return;
+    }
+    // tedd_tasks::show_teddtask's idle look, minus the trial's beam and map objective; the last entry
+    // is the relic portal fallback's colour. Parts the object lacks are skipped.
+    foreach (part in [["on", "static"], ["spawn", "show"], ["ambient_audio", "idle"], ["model_and_collision", "show"], ["ambient", "show"], ["flipbook", "idle"], ["vfx", "green_portal"]])
+    {
+        level.bb_weapon_portal utility::function_7c10ea82c1e305b8(part[0], part[1]);
+    }
+}
+
+// The scriptable a map's T.E.D.D. spots name (struct field var_84a62ee7b6bedad), into
+// level.bb_tedd_scriptable.
+tedd_scriptable_name()
+{
+    level.bb_tedd_scriptable = undefined;
+    foreach (kind in ["teddtask", "teddtask_killzone", "teddtask_holdzone", "teddtask_holdzone_and_killzone"])
+    {
+        level.bb_tedd_structs = utility::getstructarray(kind, "script_noteworthy");
+        level.bb_tedd_k = 0;
+        while (!isdefined(level.bb_tedd_scriptable) && isdefined(level.bb_tedd_structs) && level.bb_tedd_k < level.bb_tedd_structs.size)
+        {
+            level.bb_tedd_scriptable = level.bb_tedd_structs[level.bb_tedd_k].var_84a62ee7b6bedad;
+            level.bb_tedd_k++;
+        }
+    }
+}
+
+// The relic altar and the weapon station share the menu spot on screen and the relic menu wins,
+// so a player only counts as at the station when the altar isn't nearer (and the other way round).
+near_altar(player)
+{
+    return isdefined(level.bb_relic_use) && distance2dsquared(player.origin, level.bb_relic_pos) < distance2dsquared(player.origin, level.bb_weapon_pos);
 }
 
 // Built on first use, so the BO6 guns Kronos adds after load are in. Not kept while empty.
@@ -726,13 +798,25 @@ weapon_list()
             classes[classes.size] = level.bb_weapon_tags.size;  // past the tags: "WONDER WEAPONS"
         }
     }
+    // One pass over the whole weapon table (it was one per class, in a single frame on first Use),
+    // then the short list is sorted by class.
+    all = [];
+    all_cls = [];
+    foreach (entry in level.weaponmetadata)
+    {
+        if (isdefined(entry.weapon) && !istrue(entry.iswonderweapon))
+        {
+            all[all.size] = entry.weapon;
+            all_cls[all_cls.size] = weapon_class(entry.weapon);
+        }
+    }
     for (c = 0; c < level.bb_weapon_tags.size; c++)
     {
-        foreach (entry in level.weaponmetadata)
+        for (k = 0; k < all.size; k++)
         {
-            if (isdefined(entry.weapon) && !istrue(entry.iswonderweapon) && weapon_class(entry.weapon) == c)
+            if (all_cls[k] == c)
             {
-                names[names.size] = entry.weapon;
+                names[names.size] = all[k];
                 classes[classes.size] = c;
             }
         }
@@ -767,7 +851,11 @@ weapon_used(player)
     }
     if (player getstance() == "crouch")
     {
-        weapon_give(player);
+        // One give at a time: it waits for the gun to stream in.
+        if (!isdefined(level.bb_wg_busy))
+        {
+            level thread weapon_give_once(player);
+        }
     }
     else if (player getstance() == "prone")
     {
@@ -791,6 +879,14 @@ weapon_used(player)
 // first station build lost the gun that way: weapon_given "... failed"), so every call result here
 // lives on level.bb_wg_* (no waits, so one give can't interleave with another).
 // state.json weapon_given = last gun and whether it was the player's build, or why it failed.
+weapon_give_once(player)
+{
+    level.bb_wg_busy = 1;
+    level.bb_wg_ms = -1;
+    weapon_give(player);
+    level.bb_wg_busy = undefined;
+}
+
 weapon_give(player)
 {
     level.bb_wg_name = level.bb_weapon_refs[level.bb_weapon_i];
@@ -818,7 +914,7 @@ weapon_give(player)
     level.bb_wg_bundle = getscriptbundle(level.gametypebundle.var_9d7bd1394c38803a);
     level.bb_wg_bundle.rarity = level.bb_weapon_rarity;
     give_item(player);
-    bb_store("weapon_given", level.bb_wg_name + " build " + level.bb_wg_build);
+    bb_store("weapon_given", level.bb_wg_name + " build " + level.bb_wg_build + ", load " + level.bb_wg_ms + " ms");
 }
 
 // A wonder weapon comes the way a wallbuy hands out a gun that isn't a favorite: the item's own
@@ -842,7 +938,7 @@ ww_give(player)
         level.bb_wg_w = level.bb_wg_w withattachment("sat_rec_ww_mantis2");
     }
     give_item(player);
-    bb_store("weapon_given", level.bb_wg_name);
+    bb_store("weapon_given", level.bb_wg_name + ", load " + level.bb_wg_ms + " ms");
 }
 
 is_ww(i)
@@ -858,7 +954,21 @@ give_item(player)
     level.bb_wg_item.count = item_count(level.bb_wg_w, weaponclipsize(level.bb_wg_w));
     level.bb_wg_item.weaponstockammo = utility::get_max_stock_ammo(level.bb_wg_w);
     level.bb_wg_item.pickup_source = #"wallbuy";
-    player loadweaponsforplayer([level.bb_wg_w]);
+    // Stream the gun in first and wait for it, the way the box streams at roll time (high priority).
+    // Giving it unstreamed made the engine load it on the spot and stall the whole game: the lag on
+    // take, same as the Sundergat freeze (2026-11-07), which this wait fixed.
+    player loadweaponsforplayer([level.bb_wg_w], 1);
+    level.bb_wg_start = gettime();
+    waitframe();
+    while (isdefined(player) && !player hasloadedviewweapons([level.bb_wg_w]) && gettime() - level.bb_wg_start < 10000)
+    {
+        waitframe();
+    }
+    level.bb_wg_ms = gettime() - level.bb_wg_start;
+    if (!isdefined(player) || !isalive(player))
+    {
+        return;
+    }
     player common_item::function_3f39e7be347cf7e1(level.bb_wg_bundle, level.bb_wg_item);
 }
 
@@ -1273,9 +1383,6 @@ help_show()
     text = text + "|f   USE ON A PORTAL TO START THE FIGHT";
     text = text + "|nGREEN PORTAL: CURSED RELICS";
     text = text + "|f   USE: NEXT     CROUCH + USE: ON/OFF";
-    text = text + "|nT.E.D.D. STATION: GUNS + WONDER WEAPONS";
-    text = text + "|f   USE: NEXT     CROUCH + USE: TAKE";
-    text = text + "|f   PRONE + USE: NEXT CLASS";
     text = text + "|nRE-GEAR: LAST RUN'S LOADOUT + PERKS";
     text = text + "|f   HOLD AIM + MELEE";
     // The Fast Restart mod sets this once a player spawns.
@@ -1505,6 +1612,149 @@ floor_hit(spot, hit)
     return spot;
 }
 
+// One of each wonder weapon per player as floor loot, each on its own open spot to the left of the
+// spawn: Ray Gun, Mk II, the map's own wonder weapon, then the Necrofluid Gauntlet, Jotunn Star,
+// Blundergat and Nekomancer from other maps (those may lack effects/alt fire off their home map),
+// plus the Sundergat (upgraded Blundergat). The LGM-1 (ruby) was broken off Astra, so it only
+// shows up on its own map. Restored from 0.8 while the T.E.D.D. station is off (2026-11-09).
+spawn_wonder_loot()
+{
+    level.bb_loot = ["zm_sat_item_weapon_pi_raygun", "zm_sat_item_weapon_pi_raygunmark2", "zm_sat_item_weapon_ww_" + level.bb_map];
+    foreach (code in ["firefly", "locust", "mantis", "hornet"])
+    {
+        if (code != level.bb_map)
+        {
+            level.bb_loot[level.bb_loot.size] = "zm_sat_item_weapon_ww_" + code;
+        }
+    }
+    level.bb_loot[level.bb_loot.size] = "zm_sat_item_weapon_ww_mantis_upgraded";
+    level.bb_placed = 0;
+    level.bb_n = 0;  // one drop per (player, item); counters on level because of the waitframe
+    while (level.bb_n < level.players.size * level.bb_loot.size)
+    {
+        place(-90, 90, 16, 44);
+        level.bb_placed += drop_loot(getscriptbundle("itemspawnentry:" + level.bb_loot[level.bb_n % level.bb_loot.size]), level.bb_spot);
+        level.bb_n++;
+        waitframe();
+    }
+    bb_store("wonder_loot", level.bb_placed);
+}
+
+drop_loot(bundle, spot)
+{
+    if (!isdefined(bundle))
+    {
+        return 0;
+    }
+    options = loot_opts(spot);
+    // Paradox: our Sundergat item hands over a plain Blundergat (2026-11-07 log: held
+    // "sat_ww_mantis_zm pap 0 att sat_zm_ww_mantis sat_rec_ww_mantis"). PaP 0 as in the game's dev drop
+    // (weap_ww_mantis::function_9c301135b2aa5641); the item is tagged and sundergat_pickup converts it.
+    level.bb_dl_sg = level.bb_map == "mantis" && level.bb_loot[level.bb_n % level.bb_loot.size] == "zm_sat_item_weapon_ww_mantis_upgraded";
+    if (level.bb_dl_sg)
+    {
+        options.overridepaplvl = 0;
+        sundergat_hook();
+    }
+    level.bb_dl_item = item_weapon::function_b960bc85ea91de14(bundle, options);
+    if (level.bb_dl_sg && isdefined(level.bb_dl_item))
+    {
+        level.bb_dl_item.bb_sundergat = 1;
+    }
+    keep_item(level.bb_dl_item);
+    return 1;
+}
+
+// Per-player pickup hook, the way weap_ww_mantis registers its own Sundergat pickup message.
+// ponytail: only players already in the match; a co-op player joining later gets no hook.
+sundergat_hook()
+{
+    if (isdefined(level.bb_sg_hooked))
+    {
+        return;
+    }
+    level.bb_sg_hooked = 1;
+    foreach (player in level.players)
+    {
+        player callback::add(#"player_used_item", &sundergat_pickup);
+    }
+}
+
+// player_used_item fires before the item's use gives the weapon, so wait, then if the hand holds a
+// plain Blundergat, turn it into the Sundergat exactly like weap_ww_mantis::function_b63980f0807dbada
+// (the game's own Blundergat -> Sundergat upgrade, PaP 0 branch). state.json sundergat_fix.
+sundergat_pickup(params)
+{
+    if (!isdefined(params.item) || !(isdefined(params.item.bb_sundergat) || has_attachment(params.item.weaponobj, "sat_bar_ww_mantis")))
+    {
+        return;
+    }
+    self.bb_sg_tag = isdefined(params.item.bb_sundergat);
+    self endon(#"death_or_disconnect");
+    wait 0.5;
+    // Search the whole loadout, not just the hand: the raise animation may still be playing.
+    self.bb_sg_w = undefined;
+    self.bb_sg_list = self getweaponslistprimaries();
+    self.bb_sg_i = 0;
+    while (self.bb_sg_i < self.bb_sg_list.size)
+    {
+        if (self.bb_sg_list[self.bb_sg_i].basename == "sat_ww_mantis_zm" && !has_attachment(self.bb_sg_list[self.bb_sg_i], "sat_bar_ww_mantis"))
+        {
+            self.bb_sg_w = self.bb_sg_list[self.bb_sg_i];
+        }
+        self.bb_sg_i = self.bb_sg_i + 1;
+    }
+    if (!isdefined(self.bb_sg_w))
+    {
+        bb_store("sundergat_fix", "left alone: no plain Blundergat held (item tag " + self.bb_sg_tag + ")");
+        return;
+    }
+    if (self pack_a_punch::get_pap_level(self.bb_sg_w) > 0)
+    {
+        bb_store("sundergat_fix", "skipped: held Blundergat is PaP " + self pack_a_punch::get_pap_level(self.bb_sg_w));
+        return;
+    }
+    self.bb_sg_new = self.bb_sg_w withattachment("sat_bar_ww_mantis");
+    if (!isdefined(self.bb_sg_new))
+    {
+        bb_store("sundergat_fix", "withattachment failed");
+        return;
+    }
+    self.bb_sg_new = self.bb_sg_new withoutattachment("sat_rec_ww_mantis");
+    self.bb_sg_new = self.bb_sg_new withattachment("sat_rec_ww_mantis2");
+    // Stream it in first, the way br_spectate / magicbox / wallbuy do, or the give loads it on the spot
+    // and the whole game freezes for seconds (2026-11-07 test). The Blundergat stays in hand meanwhile.
+    self.bb_sg_start = gettime();
+    self loadweaponsforplayer([self.bb_sg_new], 1);
+    waitframe();
+    while (!self hasloadedviewweapons([self.bb_sg_new]) && gettime() - self.bb_sg_start < 10000)
+    {
+        waitframe();
+    }
+    self.bb_sg_ms = gettime() - self.bb_sg_start;
+    if (!self hasweapon(self.bb_sg_w))
+    {
+        bb_store("sundergat_fix", "skipped: Blundergat gone after " + self.bb_sg_ms + " ms load");
+        return;
+    }
+    self inventory_utility::_takeweapon(self.bb_sg_w);
+    self setweaponammoclip(self.bb_sg_new, weaponclipsize(self.bb_sg_new));
+    self setweaponammostock(self.bb_sg_new, weaponstartammo(self.bb_sg_new));
+    self inventory_utility::_giveweapon(self.bb_sg_new);
+    self inventory_utility::_switchtoweaponimmediate(self.bb_sg_new);
+    self item_weapon::function_40e1cbd0e1f47d1a(self.bb_sg_new, 6);
+    bb_store("sundergat_fix", "converted (item tag " + self.bb_sg_tag + ", load " + self.bb_sg_ms + " ms, has it " + self hasweapon(self.bb_sg_new) + ")");
+}
+
+has_attachment(w, name)
+{
+    if (!isdefined(w) || !isdefined(w.attachments))
+    {
+        return 0;
+    }
+    return arraycontains(w.attachments, name);
+}
+
 // Two ultra Aether Tools per player on the floor, next to the loot (Directed's Arsenal menu has no
 // tier-5 row to unlock). zm_sat_item_aether_tool_5 is the last entry of zm.gsc's dev upgrade list
 // (give_player_weapon_upgrades, hash 7a0163ba7eb3481), spawned the same way. state.json aether_ultra
@@ -1595,9 +1845,13 @@ clear_lobby_drops()
     {
         level.bb_relic_use delete();
     }
-    if (isdefined(level.bb_weapon_portal))
+    if (isdefined(level.bb_weapon_portal) && isdefined(level.bb_weapon_is_model))
     {
         level.bb_weapon_portal delete();
+    }
+    else if (isdefined(level.bb_weapon_portal))
+    {
+        level.bb_weapon_portal freescriptable();
     }
     if (isdefined(level.bb_weapon_use))
     {
@@ -1721,6 +1975,11 @@ start_fight()
     zm_utility::util_kill_all_zombies();
     if (level.bb_map == "scarab")
     {
+        // Rex puts every player on the "zm_sat_scarab_safehouse" music bank until the safehouse
+        // door is bought (zm_sat_scarab_audio), and our doors stay shut. A music cue is looked up in
+        // the player's bank, so the fight's boss_stage_* cues weren't found and the round music kept
+        // playing. Switch to the map's main bank, as buying that door does.
+        musicbank_utility::function_292d0c5a95501e81(#"zm_sat_scarab");
         level thread give_grapples();
         level thread rex_fix_arena_spawns();
     }
@@ -1730,6 +1989,14 @@ start_fight()
     // it already matches.
     zm_round_logic::set_rb_round_number(level.bb_fight_round);
     zm_utility::function_1bd2eda42461fad1(level.bb_fight_round);  // HUD round counter (ui_round_num)
+    // Blessings (Tinhorn 2026-11-10: always on): the other maps' main-quest rewards in the fight
+    // (Kowakujo + Rex pedestals, Astra's phase-3 drop, the locust map's Caltheris blessing) only
+    // show when level.completed_<map>_mq is set, which the game takes from achievement stats.
+    level.completed_firefly_mq = 1;
+    level.completed_ruby_mq = 1;
+    level.completed_locust_mq = 1;
+    level.completed_hornet_mq = 1;
+    level.completed_mantis_mq = 1;
     set_fight_tuning();
     // The boss file's dev quick start: sets the round, then threads start_boss_fight().
     level thread [[ level.bb_boss_start ]](["round" + level.bb_fight_round]);
@@ -1759,6 +2026,12 @@ fight_watch()
     }
     level.bb_t0 = gettime();
     bb_store("fight", "timing");
+    // Everyone starts the fight with a full field upgrade: the Full Power powerup's own effect.
+    foreach (player in level.players)
+    {
+        player thread full_power::function_21f8005dcd5af7f9();
+    }
+    bb_store("full_power", level.players.size);
     // A special round also sets the special-round sound state (zm_music special_round_start_music);
     // clear it as zm_music's own round end does, so it can't sit over the boss music.
     bb_store("special_round", istrue(level.var_6c65aec37d0dcb9d));

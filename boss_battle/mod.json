@@ -1,7 +1,7 @@
 {
     "name": "Boss Battle",
     "author": "Tinhorn",
-    "version": "0.9",
+    "version": "1.0",
     "type": "script",
     "requires": ["bo3_hud"],
     "description": "Infinite Warfare style boss battles on every map. Pick the Boss Battle tile (it replaces Directed): a zombie-free gear-up area with max money and every machine, then use the YELLOW portal (round 40) or RED portal (round 100) to start the map's boss fight with a timer and personal best. GREEN portal toggles relics for a Cursed fight."
